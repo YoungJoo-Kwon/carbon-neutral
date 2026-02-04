@@ -194,6 +194,11 @@ function SurveyFlow({
   const [answersBool, setAnswersBool] = useState<
     Record<string, boolean | null>
   >({});
+  const [selectedKeywords, setSelectedKeywords] = useState<
+    Record<string, boolean>
+  >({});
+  const [addedTags, setAddedTags] = useState<Array<{ id: string; title: string }>>([]);
+  const [newTagText, setNewTagText] = useState<string>("");
   const [openSections, setOpenSections] = useState<Record<number, boolean>>({
     0: true,
   });
@@ -231,6 +236,11 @@ function SurveyFlow({
     }
   }, [currentQuestionId, selectedCafe]);
 
+  useEffect(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.blur) active.blur();
+  }, [currentQuestionId]);
+
   const calculateGrade = (): Grade => {
     const scoreFromBool = (v: boolean | null | undefined) => {
       if (v === true) return 1;
@@ -240,12 +250,12 @@ function SurveyFlow({
     let rawScore = 0;
     let totalQuestions = 0;
 
-    surveyData.sections.forEach((sec) =>
-      sec.questions.forEach((q) => {
+    surveyData.sections.forEach((sec) => {
+      sec.questions?.forEach((q) => {
         rawScore += scoreFromBool(answersBool[q.id]);
         totalQuestions++;
-      }),
-    );
+      });
+    });
 
     const percent = totalQuestions ? (rawScore / totalQuestions) * 100 : 0;
     if (percent >= 80)
@@ -278,21 +288,24 @@ function SurveyFlow({
 
   const startSurvey = () => {
     setCurrentSectionIdx(0);
-    setCurrentQuestionId("SECTION_INTRO");
-  };
-
-  const startQuestions = () => {
-    setCurrentQuestionId(
-      surveyData.sections[currentSectionIdx].questions[0].id,
-    );
+    const section = surveyData.sections[0];
+    if (section.questions?.length) {
+      setCurrentQuestionId(section.questions[0].id);
+    } else if (section.keywords?.length) {
+      setCurrentQuestionId("KEYWORDS");
+    }
   };
 
   const toggleAccordion = (i: number) => {
     setOpenSections((prev) => ({ ...prev, [i]: !prev[i] }));
   };
 
-  const handleSelect = (q: string, a: string, n: string) => {
-    const normalized = a === "예" ? true : a === "아니요" ? false : null;
+  const handleSelect = (
+    q: string,
+    a: string,
+    normalized: boolean | null,
+    n: string,
+  ) => {
 
     setAnswers((prev) => ({ ...prev, [q]: a }));
     setAnswersBool((prev) => ({ ...prev, [q]: normalized }));
@@ -307,9 +320,18 @@ function SurveyFlow({
       if (n === "NEXT_SECTION") {
         const nextIdx = currentSectionIdx + 1;
         setCurrentSectionIdx(nextIdx);
-        setCurrentQuestionId(
-          nextIdx < surveyData.sections.length ? "SECTION_INTRO" : "SUMMARY",
-        );
+        if (nextIdx < surveyData.sections.length) {
+          const nextSection = surveyData.sections[nextIdx];
+          if (nextSection.questions?.length) {
+            setCurrentQuestionId(nextSection.questions[0].id);
+          } else if (nextSection.keywords?.length) {
+            setCurrentQuestionId("KEYWORDS");
+          } else {
+            setCurrentQuestionId("SUMMARY");
+          }
+        } else {
+          setCurrentQuestionId("SUMMARY");
+        }
       } else {
         setCurrentQuestionId(n);
       }
@@ -320,6 +342,33 @@ function SurveyFlow({
     setIsEditing(true);
     setCurrentSectionIdx(s);
     setCurrentQuestionId(q);
+  };
+
+  const editKeywords = (s: number) => {
+    setIsEditing(true);
+    setCurrentSectionIdx(s);
+    setCurrentQuestionId("KEYWORDS");
+  };
+
+  const handleAddTag = async () => {
+    const txt = newTagText.trim();
+    if (!txt) return;
+    try {
+      const docRef = await addDoc(collection(db, "tags"), {
+        title: txt,
+        createdAt: serverTimestamp(),
+      });
+      const id = docRef.id;
+      setAddedTags((prev) => [...prev, { id, title: txt }]);
+      setSelectedKeywords((prev) => ({ ...prev, [id]: true }));
+      setNewTagText("");
+    } catch (error) {
+      console.error("Failed to save tag", error);
+    }
+  };
+
+  const toggleKeyword = (id: string) => {
+    setSelectedKeywords((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const handleBack = () => {
@@ -347,6 +396,27 @@ function SurveyFlow({
         : selectedCafe
           ? { lat: selectedCafe.lat, lng: selectedCafe.lng }
           : null;
+      const keywordTitlesFromDefs = surveyData.sections
+        .flatMap((sec) => sec.keywords ?? [])
+        .filter((kw) => selectedKeywords[kw.id])
+        .map((kw) => kw.title);
+      const keywordTitlesFromAdded = addedTags.filter((t) => selectedKeywords[t.id]).map((t) => t.title);
+      const keywordTitles = [...keywordTitlesFromDefs, ...keywordTitlesFromAdded];
+      const sectionsPayload = surveyData.sections.map((sec) => ({
+        id: sec.id,
+        title: sec.title,
+        questions: sec.questions?.map((q) => ({
+          id: q.id,
+          title: q.title,
+          answer: answers[q.id] ?? null,
+          answerBool: answersBool[q.id] ?? null,
+        })) ?? [],
+        keywords: sec.keywords
+          ?.filter((k) => selectedKeywords[k.id])
+          .map((k) => k.title) ?? [],
+      }));
+
+      const customTags = addedTags.filter((t) => selectedKeywords[t.id]).map((t) => t.title);
 
       await addDoc(collection(db, "surveyResults"), {
         cafeName: cafeInfo.name || selectedCafe?.name || null,
@@ -355,13 +425,39 @@ function SurveyFlow({
           cafeInfo.gpsEnabled ||
           Boolean(selectedCafe?.lat && selectedCafe?.lng),
         location,
+        sections: sectionsPayload,
         answers,
         answersBool,
+        options: keywordTitles,
+        tags: [...keywordTitles, ...customTags],
+        customTags,
         grade,
         selectedCafe: selectedCafe || null,
         createdAt: serverTimestamp(),
       });
       setSubmitMessage("제출되었습니다. 감사합니다!");
+      // 잠깐 메시지를 보여주고 처음 화면으로 이동 + 상태 초기화
+      setTimeout(() => {
+        setSubmitMessage("");
+        // 상태 초기화
+        setCurrentQuestionId("START");
+        setCurrentSectionIdx(-1);
+        setCafeInfo({
+          name: "",
+          gpsEnabled: false,
+          coords: null,
+          address: null,
+        });
+        setHistory([]);
+        setAnswers({});
+        setAnswersBool({});
+        setSelectedKeywords({});
+        setAddedTags([]);
+        setNewTagText("");
+        setOpenSections({});
+        setIsEditing(false);
+        onBackToMenu?.();
+      }, 1400);
     } catch (error) {
       console.error("Failed to submit survey", error);
       setSubmitMessage(
@@ -401,6 +497,7 @@ function SurveyFlow({
                 지도에서 카페 찾기
               </button>
             )}
+
           </div>
         </div>
       );
@@ -508,7 +605,7 @@ function SurveyFlow({
                   openSections[sIdx] ? "open" : ""
                 }`}
               >
-                {sec.questions.map((q) => (
+                {sec.questions?.map((q) => (
                   <div
                     key={q.id}
                     className="summary-card"
@@ -520,6 +617,28 @@ function SurveyFlow({
                     </b>
                   </div>
                 ))}
+                {sec.keywords?.length ? (
+                  <div
+                    className="summary-card"
+                    onClick={() => editKeywords(sIdx)}
+                  >
+                    <span>{"선택한 키워드"}</span>
+                    <b style={{ color: "var(--primary-dark)" }}>
+                            {(() => {
+                              const allKeywords = [
+                                ...(sec.keywords ?? []),
+                                ...addedTags,
+                              ];
+                              return (
+                                allKeywords
+                                  .filter((k) => selectedKeywords[k.id])
+                                  .map((k) => k.title)
+                                  .join(", ") || "선택 없음"
+                              );
+                            })()}
+                    </b>
+                  </div>
+                ) : null}
               </div>
             </div>
           ))}
@@ -547,22 +666,85 @@ function SurveyFlow({
       );
     }
 
-    if (currentQuestionId === "SECTION_INTRO") {
+    if (currentQuestionId === "KEYWORDS") {
       const sec = surveyData.sections[currentSectionIdx];
+      const keywords = sec.keywords ?? [];
+      const selectedCountPredef = keywords.filter((k) => selectedKeywords[k.id]).length;
+      const selectedCountAdded = addedTags.filter((t) => selectedKeywords[t.id]).length;
+      const selectedCount = selectedCountPredef + selectedCountAdded;
       return (
         <div>
           <div className="section-badge">SECTION {currentSectionIdx + 1}</div>
           <h1>{sec.title}</h1>
-          <p>해당 섹션의 질문을 시작합니다.</p>
-          <button className="btn-main" onClick={startQuestions}>
-            질문 시작
-          </button>
+          <p className="muted-text">태그를 선택하거나 자유롭게 추가해주세요.</p>
+          <div className="keyword-grid">
+            {keywords.map((k) => {
+              const isActive = Boolean(selectedKeywords[k.id]);
+              return (
+                <button
+                  key={k.id}
+                  onClick={() => toggleKeyword(k.id)}
+                  className={`keyword-btn ${isActive ? "active" : ""}`}
+                >
+                  {k.title}
+                </button>
+              );
+            })}
+            {addedTags.map((t) => {
+              const isActive = Boolean(selectedKeywords[t.id]);
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => toggleKeyword(t.id)}
+                  className={`keyword-btn ${isActive ? "active" : ""}`}
+                >
+                  {t.title}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input
+              value={newTagText}
+              onChange={(e) => setNewTagText(e.target.value)}
+              placeholder="새 태그 추가 (예: 리필 가능)"
+              className="info-input"
+              style={{ padding: '10px 12px', flex: 1, marginTop: 0 }}
+            />
+            <button className="btn-main" style={{ width: 120 }} onClick={handleAddTag}>
+              추가
+            </button>
+          </div>
+          <div className="keyword-footer">
+            <div className="muted-text">{`선택: ${selectedCount}개`}</div>
+            <button
+              className="btn-main"
+              onClick={() => {
+                if (isEditing) {
+                  setIsEditing(false);
+                  setCurrentQuestionId("SUMMARY");
+                  return;
+                }
+                const nextIdx = currentSectionIdx + 1;
+                setCurrentSectionIdx(nextIdx);
+                setCurrentQuestionId(
+                  nextIdx < surveyData.sections.length
+                    ? "SECTION_INTRO"
+                    : "SUMMARY",
+                );
+              }}
+            >
+              {isEditing ? "요약으로 돌아가기" : "다음"}
+            </button>
+          </div>
         </div>
       );
     }
 
+
     const sec = surveyData.sections[currentSectionIdx];
-    const q = sec.questions.find((item) => item.id === currentQuestionId)!;
+    const q = sec.questions?.find((item) => item.id === currentQuestionId);
+    if (!q) return null;
     return (
       <div>
         <div className="question-card">
@@ -574,20 +756,20 @@ function SurveyFlow({
             <div className="row">
               <button
                 className="btn-opt"
-                onClick={() => handleSelect(q.id, "예", q.next)}
+                onClick={() => handleSelect(q.id, "예", true, q.next)}
               >
                 <Smile size={22} /> 예
               </button>
               <button
                 className="btn-opt"
-                onClick={() => handleSelect(q.id, "아니요", q.next)}
+                onClick={() => handleSelect(q.id, "아니요", false, q.next)}
               >
                 <Frown size={22} /> 아니요
               </button>
             </div>
             <button
               className="btn-opt full"
-              onClick={() => handleSelect(q.id, "모르겠어요", q.next)}
+              onClick={() => handleSelect(q.id, "모르겠어요", null, q.next)}
             >
               모르겠어요
             </button>
@@ -656,7 +838,10 @@ function App() {
       <>
         <SurveyFlow
           selectedCafe={selectedCafe}
-          onBackToMenu={() => setView("menu")}
+          onBackToMenu={() => {
+            setSelectedCafe(null);
+            setView("menu");
+          }}
           onRequestMap={() => setView("mapSearch")}
         />
         <ReportWidget context="survey" selectedCafe={selectedCafe} />
@@ -686,10 +871,7 @@ function App() {
         <div className="app-container">
           <div className="content fade-in">
             <div className="section-badge">지도 보기</div>
-            <h1>등록된 탄소중립 카페</h1>
-            <p className="muted-text">
-              Firebase에 저장된 카페 위치를 지도에서 확인하세요.
-            </p>
+            <h1>탄소중립 카페</h1>
             <div
               style={{
                 borderRadius: "16px",

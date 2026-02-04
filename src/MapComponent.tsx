@@ -18,6 +18,8 @@ interface CafeLocation {
   lng: number;
   name: string;
   stars: number;
+  gradeLevel?: number;
+  gradeColor?: string;
 }
 
 interface MapComponentProps {
@@ -69,13 +71,17 @@ function MapComponent({ onSelectCafe, onBackToMenu, selectedCafe }: MapComponent
               : typeof starsValue === 'string'
                 ? starsValue.length
                 : 0;
+          const gradeLevel = stars >= 3 ? 3 : stars === 2 ? 2 : 1;
+          const gradeColor = gradeLevel === 3 ? '#16a34a' : gradeLevel === 2 ? '#f59e0b' : '#ef4444';
 
           return {
             id: doc.id,
             lat: Number(item.location?.lat) || 37.5665,
             lng: Number(item.location?.lng) || 126.9780,
             name: item.cafeName || '이름 없음',
-            stars
+            stars,
+            gradeLevel,
+            gradeColor
           };
         });
 
@@ -181,7 +187,20 @@ function MapComponent({ onSelectCafe, onBackToMenu, selectedCafe }: MapComponent
 
   if (loading) return <div style={{ padding: '20px' }}>지도를 불러오는 중입니다...</div>;
   if (!window.kakao || !window.kakao.maps) {
-    return <div style={{ padding: '20px' }}>카카오 맵이 로드되지 않았습니다. 새로고침해 주세요.</div>;
+    console.error('Kakao SDK not available on window.kakao');
+    return (
+      <div style={{ padding: '20px' }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>카카오 맵 로드 실패</div>
+        <div style={{ marginBottom: 8 }}>
+          카카오 지도 SDK가 로드되지 않았습니다. 다음을 확인해 주세요:
+        </div>
+        <ul style={{ marginTop: 0 }}>
+          <li>`.env`에 `VITE_KAKAO_API_KEY`가 설정되어 있는지 확인하세요.</li>
+          <li>개발 서버를 재시작했는지 확인하세요 (`npm run dev` 또는 `npm run preview`).</li>
+          <li>브라우저 개발자 도구의 Network 탭에서 `dapi.kakao.com` 요청이 성공했는지 확인하세요.</li>
+        </ul>
+      </div>
+    );
   }
 
   return (
@@ -245,21 +264,28 @@ function MapComponent({ onSelectCafe, onBackToMenu, selectedCafe }: MapComponent
               setCenter({ lat: c.getLat(), lng: c.getLng() });
             }}
           >
-            {locations.map((loc) => (
-              <MapMarker
-                key={loc.id}
-                position={{ lat: loc.lat, lng: loc.lng }}
-                clickable
-                onClick={() => setActiveId(loc.id)}
-              >
-                {activeId === loc.id && (
-                  <div className="info-window">
-                    <div className="info-title">{loc.name}</div>
-                    <div className="info-stars">{'★'.repeat(loc.stars || 0)}</div>
-                  </div>
-                )}
-              </MapMarker>
-            ))}
+            {locations.map((loc) => {
+              // SVG marker colored by gradeColor
+              const color = (loc as any).gradeColor || '#9ca3af';
+              const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 40' width='28' height='40'><path d='M14 0C8 0 2 6 2 12c0 10 12 28 12 28s12-18 12-28c0-6-6-12-12-12z' fill='${color}' stroke='%23ffffff' stroke-width='1.5'/><circle cx='14' cy='12' r='5' fill='%23ffffff'/></svg>`;
+              const dataUrl = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+              return (
+                <MapMarker
+                  key={loc.id}
+                  position={{ lat: loc.lat, lng: loc.lng }}
+                  clickable
+                  onClick={() => setActiveId(loc.id)}
+                  image={{ src: dataUrl, size: { width: 28, height: 40 } }}
+                >
+                  {activeId === loc.id && (
+                    <div className="info-window">
+                      <div className="info-title">{loc.name}</div>
+                      <div className="info-stars">{'★'.repeat(loc.stars || 0)}</div>
+                    </div>
+                  )}
+                </MapMarker>
+              );
+            })}
 
             {searchResults.map((res) => {
               const lat = parseFloat(res.y);

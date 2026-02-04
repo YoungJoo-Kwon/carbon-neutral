@@ -1,0 +1,9 @@
+[build]
+  command = "npm run build"   # 빌드 명령
+  publish = "dist"            # 빌드 출력 디렉터리
+
+# SPA 리다이렉트 규칙
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
