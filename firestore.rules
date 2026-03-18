@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 🌍 모든 사용자가 자유롭게 읽고, 쓰고, 수정하고, 삭제할 수 있음
+    match /surveyResults/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /reports/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /tags/{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { Map, MapMarker, CustomOverlayMap } from "react-kakao-maps-sdk";
 import { db } from "./firebaseConfig";
 import { collection, getDocs } from "firebase/firestore";
@@ -74,6 +74,8 @@ function MapOverview() {
   const [mapBounds, setMapBounds] = useState<{ sw: { lat: number; lng: number }; ne: { lat: number; lng: number } } | null>(null);
   const [showSearch, setShowSearch] = useState<boolean>(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const listItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Kakao Places에서 '커피전문점' 검색
   const searchCoffeePlaces = useCallback(
@@ -257,6 +259,31 @@ function MapOverview() {
     mapInstance.setBounds(bounds);
   }, [mapInstance, locations]);
 
+  // Map bounds 변경 감지 및 업데이트
+  useEffect(() => {
+    if (!mapInstance || !window.kakao?.maps) return;
+
+    const handleBoundsChanged = () => {
+      const bounds = mapInstance.getBounds();
+      const sw = bounds.getSouthWest();
+      const ne = bounds.getNorthEast();
+      setMapBounds({
+        sw: { lat: sw.getLat(), lng: sw.getLng() },
+        ne: { lat: ne.getLat(), lng: ne.getLng() },
+      });
+    };
+
+    // bounds_changed 이벤트 리스너 추가
+    window.kakao.maps.event.addListener(mapInstance, 'bounds_changed', handleBoundsChanged);
+
+    // 초기 bounds 설정
+    handleBoundsChanged();
+
+    return () => {
+      window.kakao.maps.event.removeListener(mapInstance, 'bounds_changed', handleBoundsChanged);
+    };
+  }, [mapInstance]);
+
 
 
   // Kakao Places 검색 - 지도 중심 변경 시
@@ -270,7 +297,12 @@ function MapOverview() {
 
   // Firebase 데이터와 Kakao 검색 결과 병합
   // 같은 지점의 여러 데이터는 하나로 병합하고 별점 평균화
-  const mergedLocations = (() => {
+  const mergedLocations = useMemo(() => {
+    // Kakao SDK가 없으면 Firebase 데이터만 반환
+    if (!window.kakao || !window.kakao.maps) {
+      return locations;
+    }
+
     const MATCH_THRESHOLD_M = 100; // 100m 이내를 같은 카페로 간주
     const merged: CafePoint[] = [];
     const processedKakaoIds = new Set<string>();
@@ -343,8 +375,55 @@ function MapOverview() {
     });
 
     return merged;
-  })();
+  }, [kakaoResults, locations, chainCafes, center.lat, center.lng]);
 
+  const optionPresets = [
+    "텀블러 할인",
+    "전자영수증",
+    "베이커리",
+    "저탄소메뉴",
+    "무인카페",
+  ];
+
+  const filteredLocations = useMemo(() => mergedLocations.filter((loc) => {
+    // 지도 범위 내 필터링
+    if (mapBounds) {
+      const { sw, ne } = mapBounds;
+      if (loc.lat < sw.lat || loc.lat > ne.lat || loc.lng < sw.lng || loc.lng > ne.lng) {
+        return false;
+      }
+    }
+    
+    // 키워드 필터링
+    if (!keyword.trim()) return true;
+    const q = keyword.trim().toLowerCase();
+    return (
+      loc.name.toLowerCase().includes(q) ||
+      (loc.address || "").toLowerCase().includes(q)
+    );
+  }), [mergedLocations, mapBounds, keyword]);
+
+  // 리스트가 변할 때 스크롤을 맨 위로 초기화
+  useEffect(() => {
+    if (listContainerRef.current) {
+      listContainerRef.current.scrollTop = 0;
+    }
+  }, [filteredLocations]);
+
+  const handleSelectLocation = useCallback((loc: CafePoint) => {
+    setActiveId(loc.id);
+    if (mapInstance && window.kakao?.maps) {
+      const target = new window.kakao.maps.LatLng(loc.lat, loc.lng);
+      // panTo is smoother than setCenter (if available)
+      if (typeof mapInstance.panTo === "function") mapInstance.panTo(target);
+      else mapInstance.setCenter(target);
+    }
+    // keep list item visible
+    const el = listItemRefs.current[loc.id];
+    el?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [mapInstance]);
+
+  // Early checks for loading and SDK availability
   if (loading)
     return <div style={{ padding: "20px" }}>지점을 불러오는 중입니다...</div>;
   if (!window.kakao || !window.kakao.maps) {
@@ -363,32 +442,6 @@ function MapOverview() {
       </div>
     );
   }
-
-  const optionPresets = [
-    "텀블러 할인",
-    "전자영수증",
-    "베이커리",
-    "저탄소메뉴",
-    "무인카페",
-  ];
-
-  const filteredLocations = mergedLocations.filter((loc) => {
-    // 지도 범위 내 필터링
-    if (mapBounds) {
-      const { sw, ne } = mapBounds;
-      if (loc.lat < sw.lat || loc.lat > ne.lat || loc.lng < sw.lng || loc.lng > ne.lng) {
-        return false;
-      }
-    }
-    
-    // 키워드 필터링
-    if (!keyword.trim()) return true;
-    const q = keyword.trim().toLowerCase();
-    return (
-      loc.name.toLowerCase().includes(q) ||
-      (loc.address || "").toLowerCase().includes(q)
-    );
-  });
 
   return (
     <div className="map-frame">
@@ -456,15 +509,6 @@ function MapOverview() {
       </div>
 
       <Map
-        onBoundsChanged={(map) => {
-          const bounds = map.getBounds();
-          const sw = bounds.getSouthWest();
-          const ne = bounds.getNorthEast();
-          setMapBounds({
-            sw: { lat: sw.getLat(), lng: sw.getLng() },
-            ne: { lat: ne.getLat(), lng: ne.getLng() },
-          });
-        }}
         center={center}
         style={{ width: "100%", height: "520px" }}
         level={4}
@@ -475,7 +519,7 @@ function MapOverview() {
         }}
         onClick={() => setActiveId(null)}
       >
-        {filteredLocations.map((loc, idx) => {
+        {filteredLocations.map((loc) => {
           const isActive = activeId === loc.id;
           const matchesOption =
             !selectedOption ||
@@ -483,59 +527,12 @@ function MapOverview() {
               opt?.toLowerCase().includes(selectedOption?.toLowerCase() || ""),
             );
           
-          // 키워드 선택 안 함: 모든 마커 표시 (불투명 100%)
-          // 키워드 선택 함:
-          //   - 매칭됨: 불투명 100% + 배지 표시
-          //   - 미매칭: 불투명 30% + 배지 없음
-          const showBadge = !selectedOption || matchesOption;
-          const markerOpacity = !selectedOption ? 0.5 : (matchesOption ? 1 : 0.3);
-          const badgeOpacity = !selectedOption ? 0.7 : (matchesOption ? 1 : 0);
+          // 기본은 마커만 표시 (지도 위 텍스트 배지 제거)
+          // 옵션 필터 선택 시: 매칭되지 않는 마커는 흐리게 표시
+          const markerOpacity = !selectedOption ? 0.85 : (matchesOption ? 1 : 0.25);
           
           // Kakao 검색 결과(Firebase 데이터 없음)는 회색, Firebase가 있으면 등급 색상
           const markerColor = loc.gradeColor || (loc.isFromKakao ? "#9ca3af" : (isActive ? "#0ea5e9" : matchesOption ? "#111827" : "#9ca3af"));
-          
-          const badge = showBadge ? (
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveId(loc.id);
-              }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 10px",
-                background: markerColor,
-                color: "white",
-                borderRadius: 999,
-                boxShadow: "0 8px 16px rgba(0,0,0,0.25)",
-                cursor: "pointer",
-                transform: "translateY(-10px)",
-                fontWeight: 700,
-                fontSize: "12px",
-                border: "1px solid rgba(255,255,255,0.2)",
-                opacity: badgeOpacity,
-                transition: "opacity 0.2s ease",
-              }}
-            >
-              <div
-                style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: "50%",
-                  background: "white",
-                  color: markerColor,
-                  display: "grid",
-                  placeItems: "center",
-                  fontWeight: 800,
-                  fontSize: "11px",
-                }}
-              >
-                {idx + 1}
-              </div>
-              <span style={{ whiteSpace: "nowrap" }}>{loc.name}</span>
-            </div>
-          ) : null;
 
           // create SVG marker colored by markerColor - 점 모양
           const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'><circle cx='8' cy='8' r='7' fill='${markerColor}' stroke='%23ffffff' stroke-width='2' opacity='${markerOpacity}'/></svg>`;
@@ -546,18 +543,9 @@ function MapOverview() {
               <MapMarker
                 position={{ lat: loc.lat, lng: loc.lng }}
                 clickable
-                onClick={() => setActiveId(loc.id)}
+                onClick={() => handleSelectLocation(loc)}
                 image={{ src: dataUrl, size: { width: 16, height: 16 } }}
               />
-              {badge && (
-                <CustomOverlayMap
-                  position={{ lat: loc.lat, lng: loc.lng }}
-                  yAnchor={1.2}
-                  zIndex={isActive ? 3 : 1}
-                >
-                  {badge}
-                </CustomOverlayMap>
-              )}
               {isActive && (
                 <CustomOverlayMap
                   position={{ lat: loc.lat, lng: loc.lng }}
@@ -631,6 +619,97 @@ function MapOverview() {
           );
         })}
       </Map>
+
+      {/* Bounds 내 카페 리스트 */}
+      <div style={{ marginTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+          <div style={{ fontWeight: 900, color: "#111827" }}>
+            현재 화면 내 카페 <span style={{ color: "#6b7280", fontWeight: 800, fontSize: 13 }}>({filteredLocations.length})</span>
+          </div>
+          <div style={{ color: "#6b7280", fontSize: 12 }}>
+            지도를 움직이면 목록이 갱신됩니다
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginTop: 8,
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            overflow: "hidden",
+            background: "white",
+            maxHeight: 320,
+          }}
+        >
+          <div ref={listContainerRef} style={{ maxHeight: 320, overflow: "auto" }}>
+            {filteredLocations.length === 0 ? (
+              <div style={{ padding: 14, color: "#6b7280", fontSize: 13 }}>
+                현재 지도 화면에 표시할 카페가 없습니다. 지도를 이동하거나 필터를 해제해 보세요.
+              </div>
+            ) : (
+              filteredLocations.map((loc) => {
+                const isActive = activeId === loc.id;
+                return (
+                  <button
+                    key={`list-${loc.id}`}
+                    ref={(el) => { listItemRefs.current[loc.id] = el; }}
+                    onClick={() => handleSelectLocation(loc)}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "12px 12px",
+                      border: "none",
+                      borderBottom: "1px solid #f3f4f6",
+                      background: isActive ? "#eff6ff" : "white",
+                      cursor: "pointer",
+                      display: "flex",
+                      gap: 10,
+                      alignItems: "flex-start",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: 999,
+                        background: loc.gradeColor || (loc.isFromKakao ? "#9ca3af" : "#111827"),
+                        marginTop: 6,
+                        flex: "0 0 auto",
+                        boxShadow: "0 0 0 2px rgba(255,255,255,0.9)",
+                      }}
+                    />
+                    <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                        <div style={{ fontWeight: 900, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {loc.name}
+                        </div>
+                        {loc.isFromKakao && !loc.stars && (
+                          <div style={{ fontSize: 11, color: "#9ca3af" }}>(검색 결과)</div>
+                        )}
+                      </div>
+                      {loc.address && (
+                        <div style={{ color: "#6b7280", fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {loc.address}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+                        <div style={{ fontSize: 12, color: "#f59e0b" }}>
+                          {loc.stars ? "★".repeat(Math.round(loc.stars)) : <span style={{ color: "#9ca3af" }}>별점 없음</span>}
+                        </div>
+                        {loc.options && loc.options.length > 0 && (
+                          <div style={{ fontSize: 11, color: "#6b7280", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 520 }}>
+                            태그: {loc.options.slice(0, 4).join(", ")}{loc.options.length > 4 ? "…" : ""}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </div>
 
     </div>
   );

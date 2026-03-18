@@ -45,7 +45,7 @@ export const surveyData: SurveyData = {
         },
         {
           id: "q1_4",
-          title: "메뉴에 친환경(저탄소배출) 정보가 있나요?",
+          title: "매장 안에 친환경 기후 관련 정보나 포스터가 있나요?",
           next: "q1_5",
         },
         {
